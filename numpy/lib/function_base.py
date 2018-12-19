@@ -17,7 +17,7 @@ from numpy.core import atleast_1d, transpose
 from numpy.core.numeric import (
     ones, zeros, arange, concatenate, array, asarray, asanyarray, empty,
     empty_like, ndarray, around, floor, ceil, take, dot, where, intp,
-    integer, isscalar, absolute
+    integer, isscalar, absolute, outer
     )
 from numpy.core.umath import (
     pi, add, arctan2, frompyfunc, cos, less_equal, sqrt, sin,
@@ -3992,7 +3992,7 @@ def _trapz_dispatcher(y, x=None, dx=None, axis=None):
 
 
 @array_function_dispatch(_trapz_dispatcher)
-def trapz(y, x=None, dx=1.0, axis=-1):
+def trapz(y, x=None, dx=1.0, axis=-1, var=None, cov=None):
     """
     Integrate along the given axis using the composite trapezoidal rule.
 
@@ -4010,11 +4010,27 @@ def trapz(y, x=None, dx=1.0, axis=-1):
         The spacing between sample points when `x` is None. The default is 1.
     axis : int, optional
         The axis along which to integrate.
+    var : array_like, optional
+        Variances on the `y` values. If this argument is given, trapz wil
+        also return the variance on the integral. The default is None. If
+        `cov` is given, `var` is ignored.
+    cov : array_like, optional
+        Covariance matrix between the `y` values. If this argument is given,
+        trapz will also return the variance on the integral. The default is
+        None. `y` must be 1-dimensional to use `cov`.
 
     Returns
     -------
     trapz : float
         Definite integral as approximated by trapezoidal rule.
+    trapz_unc : float
+        Uncertainty on the definite integral. Only returned if `dy` is not
+        None.
+
+    Raises
+    ------
+    ValueError
+        If `cov` is used with a multidimensional `y`.
 
     See Also
     --------
@@ -4068,18 +4084,41 @@ def trapz(y, x=None, dx=1.0, axis=-1):
         else:
             d = diff(x, axis=axis)
     nd = y.ndim
+    if cov is not None and nd > 1:
+        raise ValueError('Covariances are only supported for a 1-dimensional y')
+    elif cov is not None:
+        cov = asanyarray(cov)
+        pair_cov = cov[1:, 1:] + cov[1:, :-1] + cov[:-1, 1:] + cov[:-1, :-1]
+    elif var is not None:
+        var = asanyarray(var)
     slice1 = [slice(None)]*nd
     slice2 = [slice(None)]*nd
     slice1[axis] = slice(1, None)
     slice2[axis] = slice(None, -1)
     try:
         ret = (d * (y[tuple(slice1)] + y[tuple(slice2)]) / 2.0).sum(axis)
+        if cov is not None:
+            total_var = (outer(d, d) * pair_cov).sum() / 2.
+        elif var is not None:
+            total_var = (d ** 2 * (var[tuple(slice1)] + var[tuple(slice2)])).sum(axis) / 2.
+        else:
+            total_var = None
     except ValueError:
         # Operations didn't work, cast to ndarray
         d = np.asarray(d)
         y = np.asarray(y)
         ret = add.reduce(d * (y[tuple(slice1)]+y[tuple(slice2)])/2.0, axis)
-    return ret
+        var = np.asarray(var)
+        if cov is not None:
+            total_var = add.reduce(outer(d, d) * pair_cov, None) / 2.
+        elif var is not None:
+            total_var = add.reduce(d ** 2 * (var[tuple(slice1)] + var[tuple(slice2)]), axis) / 2
+        else:
+            total_var = None
+    if total_var is None:
+        return ret
+    else:
+        return ret, total_var
 
 
 def _meshgrid_dispatcher(*xi, **kwargs):
